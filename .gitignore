@@ -31,3 +31,6 @@ profiles.yml
 # CI artifacts
 prod-artifacts/
 manifest.json.bak
+
+# Others
+MISSION.md
