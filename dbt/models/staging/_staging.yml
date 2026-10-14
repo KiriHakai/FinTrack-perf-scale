@@ -28,8 +28,9 @@ models:
         tests:
           - not_null
           - relationships:
-              to: ref('stg_tenants')
-              field: tenant_id
+              arguments:
+                to: ref('stg_tenants')
+                field: tenant_id
 
   - name: stg_transactions
     description: "Transactions typées, incremental merge"
@@ -42,3 +43,46 @@ models:
     columns:
       - name: virement_id
         tests: [unique, not_null]
+
+  - name: stg_titulaires
+    description: "Personnes physiques détentrices de comptes (US 2.2)"
+    columns:
+      - name: titulaire_id
+        tests: [unique, not_null]
+      - name: titulaire_hash
+        description: "Empreinte des données nominatives, pour rapprochement sans exposer la PII"
+        tests: [not_null]
+
+  - name: stg_compte_titulaires
+    description: "Rattachements compte <-> titulaire, avec clé de répartition et historisation"
+    columns:
+      - name: compte_titulaire_id
+        tests: [unique, not_null]
+      - name: compte_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_comptes')
+                field: compte_id
+      - name: titulaire_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_titulaires')
+                field: titulaire_id
+      - name: allocation_factor
+        description: "Quote-part du titulaire sur le compte ; somme = 1 par compte à une date donnée"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+                inclusive: true
+      - name: role_titulaire
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['titulaire_principal', 'co_titulaire']

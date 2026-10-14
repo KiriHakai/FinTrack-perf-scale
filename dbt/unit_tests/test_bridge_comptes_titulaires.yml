@@ -1,0 +1,105 @@
+unit_tests:
+
+  - name: test_compte_joint_deux_titulaires
+    description: >
+      Un compte détenu par deux personnes produit deux lignes, marquées comme
+      compte joint, avec le compte des détenteurs correctement calculé.
+    model: bridge_comptes_titulaires
+    given:
+      - input: ref('stg_compte_titulaires')
+        rows:
+          - {compte_titulaire_id: 1, compte_id: 10, titulaire_id: 100,
+             role_titulaire: 'titulaire_principal', allocation_factor: 0.6,
+             is_primary: true, date_debut: '2023-01-01', date_fin: null,
+             is_rattachement_courant: true, created_at: '2023-01-01',
+             updated_at: '2023-01-01', _loaded_at: '2023-01-02'}
+          - {compte_titulaire_id: 2, compte_id: 10, titulaire_id: 101,
+             role_titulaire: 'co_titulaire', allocation_factor: 0.4,
+             is_primary: false, date_debut: '2023-01-01', date_fin: null,
+             is_rattachement_courant: true, created_at: '2023-01-01',
+             updated_at: '2023-01-01', _loaded_at: '2023-01-02'}
+      - input: ref('stg_titulaires')
+        rows:
+          - {titulaire_id: 100, titulaire_hash: 'h100', nom: 'Martin',
+             prenom: 'Claire', email: 'c@example.test', pays_residence: 'FR',
+             is_pep: false}
+          - {titulaire_id: 101, titulaire_hash: 'h101', nom: 'Martin',
+             prenom: 'Paul', email: 'p@example.test', pays_residence: 'FR',
+             is_pep: false}
+      - input: ref('stg_comptes')
+        rows:
+          - {compte_id: 10, tenant_id: 1, type_compte: 'joint',
+             devise: 'EUR', statut: 'actif'}
+    expect:
+      rows:
+        - {compte_id: 10, titulaire_id: 100, allocation_factor: 0.6,
+           nb_titulaires_compte: 2, is_compte_joint: true, is_primary: true}
+        - {compte_id: 10, titulaire_id: 101, allocation_factor: 0.4,
+           nb_titulaires_compte: 2, is_compte_joint: true, is_primary: false}
+
+  - name: test_compte_individuel
+    description: >
+      Un compte à titulaire unique porte une quote-part de 1 et n'est pas
+      marqué comme compte joint.
+    model: bridge_comptes_titulaires
+    given:
+      - input: ref('stg_compte_titulaires')
+        rows:
+          - {compte_titulaire_id: 3, compte_id: 20, titulaire_id: 200,
+             role_titulaire: 'titulaire_principal', allocation_factor: 1.0,
+             is_primary: true, date_debut: '2023-06-01', date_fin: null,
+             is_rattachement_courant: true, created_at: '2023-06-01',
+             updated_at: '2023-06-01', _loaded_at: '2023-06-02'}
+      - input: ref('stg_titulaires')
+        rows:
+          - {titulaire_id: 200, titulaire_hash: 'h200', nom: 'Durand',
+             prenom: 'Alice', email: 'a@example.test', pays_residence: 'BE',
+             is_pep: false}
+      - input: ref('stg_comptes')
+        rows:
+          - {compte_id: 20, tenant_id: 2, type_compte: 'courant',
+             devise: 'EUR', statut: 'actif'}
+    expect:
+      rows:
+        - {compte_id: 20, titulaire_id: 200, allocation_factor: 1.0,
+           nb_titulaires_compte: 1, is_compte_joint: false, is_primary: true}
+
+  - name: test_rattachement_clos_exclu_du_comptage
+    description: >
+      Un rattachement terminé reste présent dans la bridge — l'historique doit
+      être conservé — mais ne doit pas compter dans le nombre de détenteurs
+      courants du compte.
+    model: bridge_comptes_titulaires
+    given:
+      - input: ref('stg_compte_titulaires')
+        rows:
+          # Ancien co-titulaire, sorti du compte
+          - {compte_titulaire_id: 4, compte_id: 30, titulaire_id: 300,
+             role_titulaire: 'co_titulaire', allocation_factor: 0.5,
+             is_primary: false, date_debut: '2023-01-01', date_fin: '2024-01-01',
+             is_rattachement_courant: false, created_at: '2023-01-01',
+             updated_at: '2024-01-01', _loaded_at: '2024-01-02'}
+          # Titulaire restant, désormais seul
+          - {compte_titulaire_id: 5, compte_id: 30, titulaire_id: 301,
+             role_titulaire: 'titulaire_principal', allocation_factor: 1.0,
+             is_primary: true, date_debut: '2024-01-01', date_fin: null,
+             is_rattachement_courant: true, created_at: '2024-01-01',
+             updated_at: '2024-01-01', _loaded_at: '2024-01-02'}
+      - input: ref('stg_titulaires')
+        rows:
+          - {titulaire_id: 300, titulaire_hash: 'h300', nom: 'Petit',
+             prenom: 'Luc', email: 'l@example.test', pays_residence: 'FR',
+             is_pep: false}
+          - {titulaire_id: 301, titulaire_hash: 'h301', nom: 'Petit',
+             prenom: 'Marie', email: 'm@example.test', pays_residence: 'FR',
+             is_pep: false}
+      - input: ref('stg_comptes')
+        rows:
+          - {compte_id: 30, tenant_id: 1, type_compte: 'courant',
+             devise: 'EUR', statut: 'actif'}
+    expect:
+      rows:
+        - {titulaire_id: 300, nb_titulaires_compte: 1, is_compte_joint: false,
+           is_rattachement_courant: false}
+        - {titulaire_id: 301, nb_titulaires_compte: 1, is_compte_joint: false,
+           is_rattachement_courant: true}

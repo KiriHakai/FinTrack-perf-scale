@@ -199,8 +199,15 @@ CREATE OR REPLACE TABLE raw_transactions (
     is_reversal                     BOOLEAN,
     original_transaction_id         NUMBER(18, 0),
     _loaded_at                      TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
-)
-CLUSTER BY (tenant_id, DATE_TRUNC('MONTH', date_transaction));
+);
+
+-- CLUSTER BY retiré : une clustering key contenant une expression
+-- (DATE_TRUNC) est rejetée par COPY INTO —
+--   "SQL compilation error: Function 'TRUNCTIMESTAMPTOMonth' not supported within a COPY"
+-- Le pruning par (tenant_id, mois) n'apporte par ailleurs rien sur le RAW,
+-- lu intégralement par les modèles staging qui filtrent sur _loaded_at.
+-- Voir docs/PERF_LOG.md § Incidents et docs/JOURNAL_MISSION.md (décision 1.3).
+-- CLUSTER BY (tenant_id, DATE_TRUNC('MONTH', date_transaction));
 
 -- ============================================
 -- VIREMENTS INTERNES
@@ -222,8 +229,55 @@ CREATE OR REPLACE TABLE raw_virements (
     created_at              TIMESTAMP_NTZ,
     updated_at              TIMESTAMP_NTZ,
     _loaded_at              TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
-)
-CLUSTER BY (tenant_id, DATE_TRUNC('MONTH', date_virement));
+);
+
+-- CLUSTER BY retiré : une clustering key contenant une expression
+-- (DATE_TRUNC) est rejetée par COPY INTO —
+--   "SQL compilation error: Function 'TRUNCTIMESTAMPTOMonth' not supported within a COPY"
+-- Le pruning par (tenant_id, mois) n'apporte par ailleurs rien sur le RAW,
+-- lu intégralement par les modèles staging qui filtrent sur _loaded_at.
+-- Voir docs/PERF_LOG.md § Incidents et docs/JOURNAL_MISSION.md (décision 1.3).
+-- CLUSTER BY (tenant_id, DATE_TRUNC('MONTH', date_virement));
+
+-- ============================================
+-- TITULAIRES (personnes physiques) — US 2.2
+-- ============================================
+-- Un titulaire est une personne physique, distincte du compte : la même
+-- personne peut détenir plusieurs comptes, et un compte joint est détenu
+-- par plusieurs personnes.
+CREATE OR REPLACE TABLE raw_titulaires (
+    titulaire_id            INTEGER,
+    nom                     VARCHAR(100),
+    prenom                  VARCHAR(100),
+    email                   VARCHAR(200),
+    telephone               VARCHAR(30),
+    date_naissance          DATE,
+    pays_residence          VARCHAR(2),
+    is_pep                  BOOLEAN,
+    created_at              TIMESTAMP_NTZ,
+    updated_at              TIMESTAMP_NTZ,
+    _loaded_at              TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+-- ============================================
+-- RATTACHEMENTS COMPTE ↔ TITULAIRE — US 2.2
+-- ============================================
+-- Table d'association portant la clé de répartition (allocation_factor,
+-- dont la somme vaut 1 par compte) et l'historisation du rattachement
+-- (date_debut / date_fin). C'est la source de la bridge dbt.
+CREATE OR REPLACE TABLE raw_compte_titulaires (
+    compte_titulaire_id     INTEGER,
+    compte_id               INTEGER,
+    titulaire_id            INTEGER,
+    role_titulaire          VARCHAR(30),      -- 'titulaire_principal' | 'co_titulaire'
+    allocation_factor       NUMBER(5, 4),     -- somme = 1 par compte
+    is_primary              BOOLEAN,
+    date_debut              DATE,
+    date_fin                DATE,             -- NULL = rattachement en cours
+    created_at              TIMESTAMP_NTZ,
+    updated_at              TIMESTAMP_NTZ,
+    _loaded_at              TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
 
 -- ============================================
 -- QUERY TAG PAR DÉFAUT

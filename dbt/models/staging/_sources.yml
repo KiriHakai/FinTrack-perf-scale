@@ -6,11 +6,14 @@ sources:
     schema: RAW
     description: "Données brutes chargées depuis le core banking system"
 
-    # Freshness SLA — configurez selon les tenants de production
-    freshness:
-      warn_after:  {count: 6,  period: hour}
-      error_after: {count: 24, period: hour}
-    loaded_at_field: _loaded_at
+    # Freshness SLA par défaut — surchargé table par table ci-dessous.
+    # Depuis dbt 1.10, `freshness` et `loaded_at_field` sont des configs
+    # et non plus des propriétés de premier niveau.
+    config:
+      freshness:
+        warn_after:  {count: 6,  period: hour}
+        error_after: {count: 24, period: hour}
+      loaded_at_field: _loaded_at
 
     tables:
       - name: raw_tenants
@@ -29,20 +32,22 @@ sources:
 
       - name: raw_comptes
         description: "Comptes clients avec KYC/AML et données PII"
-        loaded_at_field: _loaded_at
-        freshness:
-          warn_after:  {count: 12, period: hour}
-          error_after: {count: 48, period: hour}
+        config:
+          loaded_at_field: _loaded_at
+          freshness:
+            warn_after:  {count: 12, period: hour}
+            error_after: {count: 48, period: hour}
         columns:
           - name: compte_id
             tests: [unique, not_null]
 
       - name: raw_transactions
         description: "Table de faits large — 80 colonnes, jusqu'à 100M lignes"
-        loaded_at_field: _loaded_at
-        freshness:
-          warn_after:  {count: 2, period: hour}
-          error_after: {count: 6, period: hour}
+        config:
+          loaded_at_field: _loaded_at
+          freshness:
+            warn_after:  {count: 2, period: hour}
+            error_after: {count: 6, period: hour}
         columns:
           - name: transaction_id
             tests: [unique, not_null]
@@ -50,12 +55,46 @@ sources:
             tests:
               - not_null
               - relationships:
-                  to: source('fintrack_raw', 'raw_tenants')
-                  field: tenant_id
+                  arguments:
+                    to: source('fintrack_raw', 'raw_tenants')
+                    field: tenant_id
 
       - name: raw_virements
         description: "Virements internes entre comptes"
-        loaded_at_field: _loaded_at
+        config:
+          loaded_at_field: _loaded_at
         columns:
           - name: virement_id
             tests: [unique, not_null]
+
+      - name: raw_titulaires
+        description: "Personnes physiques détentrices de comptes (US 2.2)"
+        config:
+          loaded_at_field: _loaded_at
+        columns:
+          - name: titulaire_id
+            tests: [unique, not_null]
+
+      - name: raw_compte_titulaires
+        description: >
+          Rattachements compte <-> titulaire, avec clé de répartition et
+          historisation. Source de la bridge many-to-many (US 2.2).
+        config:
+          loaded_at_field: _loaded_at
+        columns:
+          - name: compte_titulaire_id
+            tests: [unique, not_null]
+          - name: compte_id
+            tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('fintrack_raw', 'raw_comptes')
+                    field: compte_id
+          - name: titulaire_id
+            tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('fintrack_raw', 'raw_titulaires')
+                    field: titulaire_id
