@@ -11,10 +11,16 @@ dbt/dbt_packages/
 dbt/logs/
 dbt/.user.yml
 
-# Data
-data/raw/*.csv
-data/raw/*.csv.gz
+# Data — aucune donnee generee ne doit entrer dans le depot, quel que soit
+# l'emplacement : le generateur produit des fichiers de 150 Mo+ que GitHub
+# refuse au-dela de 100 Mo.
+*.csv
+*.csv.gz
+data/
 data/processed/
+
+# Logs dbt
+logs/
 
 # Secrets
 profiles.yml
@@ -33,4 +39,4 @@ prod-artifacts/
 manifest.json.bak
 
 # Others
-MISSION.md
+# MISSION.md : exclusion retiree, le briefing fait partie du depot
