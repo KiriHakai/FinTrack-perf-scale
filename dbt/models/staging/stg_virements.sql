@@ -11,7 +11,13 @@
 with source as (
     select * from {{ source('fintrack_raw', 'raw_virements') }}
     {% if is_incremental() %}
-        where _loaded_at >= (select dateadd('day', -3, max(_loaded_at)) from {{ this }})
+        -- Même fenêtre paramétrable que les transactions, par cohérence :
+        -- une fenêtre plus courte ici créerait un décalage entre les deux faits
+        -- lors d'un rattrapage après incident.
+        where _loaded_at >= (
+            select dateadd('day', -{{ var('incremental_lookback_days') }}, max(_loaded_at))
+            from {{ this }}
+        )
     {% endif %}
 )
 

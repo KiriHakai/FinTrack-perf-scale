@@ -9,25 +9,57 @@
 -- jours plutôt que juste les nouvelles lignes.
 -- ============================================================
 
+-- merge_update_columns : liste BLANCHE des colonnes modifiables.
+-- Tout ce qui n'y figure pas est figé à l'insertion — c'est voulu : le montant,
+-- la devise ou la date d'une transaction ne changent jamais après coup.
+-- Restreindre la liste réduit le volume réécrit par le MERGE, donc le nombre
+-- de micro-partitions recréées.
+-- Colonnes retenues = celles qu'un core banking met réellement à jour après
+-- insertion : cycle de vie du statut, rapprochement bancaire, revue AML/fraude.
+--
+-- event_time : déclaré pour le prototype microbatch (US 3.2). dbt ne filtre un
+-- parent par tranche temporelle que si celui-ci expose un event_time.
+-- Sans effet sur la stratégie merge de ce modèle.
+
 {{
     config(
         materialized='incremental',
         unique_key='transaction_id',
         incremental_strategy='merge',
         merge_update_columns=['statut', 'statut_precedent', 'date_traitement',
-                              'date_settlement', 'is_reconciled', 'aml_flag',
-                              'aml_score', 'fraud_score', 'updated_at'],
+                              'date_settlement', 'is_reconciled',
+                              'date_reconciliation', 'reconciliation_batch_id',
+                              'aml_flag', 'aml_score', 'aml_reviewed_by',
+                              'aml_review_date', 'fraud_score',
+                              'is_flagged_for_review', 'nb_tentatives',
+                              'raison_rejet', 'code_erreur', 'updated_at'],
         cluster_by=['tenant_id', "date_trunc('month', date_transaction)"],
         on_schema_change='append_new_columns',
+        event_time='date_transaction',
         tags=['staging', 'transactions', 'incremental']
     )
 }}
 
 with source as (
     select * from {{ source('fintrack_raw', 'raw_transactions') }}
+
     {% if is_incremental() %}
-        -- Fenêtre glissante de 7 jours pour capturer les mises à jour de statut
-        where _loaded_at >= (select dateadd('day', -7, max(_loaded_at)) from {{ this }})
+        -- Fenêtre glissante paramétrable (var incremental_lookback_days,
+        -- définie dans dbt_project.yml et surchargeable en ligne de commande :
+        --     dbt run --vars '{incremental_lookback_days: 30}'
+        --
+        -- La borne est relative au MAX déjà chargé, et non à CURRENT_DATE :
+        -- si le pipeline n'a pas tourné pendant trois jours, la fenêtre part
+        -- du dernier chargement connu et ne laisse donc aucun trou.
+        --
+        -- Elle doit couvrir le délai maximal de mise à jour d'une transaction
+        -- côté source (passage en_attente → validee, rapprochement bancaire,
+        -- revue AML). Trop courte, on rate des mises à jour ; trop longue, on
+        -- retraite inutilement des lignes inchangées.
+        where _loaded_at >= (
+            select dateadd('day', -{{ var('incremental_lookback_days') }}, max(_loaded_at))
+            from {{ this }}
+        )
     {% endif %}
 ),
 

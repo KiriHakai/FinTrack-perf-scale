@@ -24,6 +24,12 @@ agg as (
         count(*) as nb_transactions,
         count(distinct compte_id) as nb_comptes_actifs,
         count(distinct case when statut = 'validee' then transaction_id end) as nb_transactions_validees,
+        -- ATTENTION : ce compteur renvoie structurellement 0.
+        -- fct_transactions ne retient que les statuts 'validee' et 'en_attente'
+        -- (grain défini au cadrage), aucune transaction 'rejetee' n'y figure.
+        -- Le taux de validation ci-dessous est donc surestimé : son
+        -- dénominateur exclut les échecs.
+        -- Limite documentée dans fct_transactions.sql et docs/DESIGN.md.
         count(distinct case when statut = 'rejetee' then transaction_id end) as nb_transactions_rejetees,
         sum(case when type_operation = 'credit' and statut = 'validee' then montant_eur else 0 end) as volume_credit_eur,
         sum(case when type_operation = 'debit'  and statut = 'validee' then montant_eur else 0 end) as volume_debit_eur,
