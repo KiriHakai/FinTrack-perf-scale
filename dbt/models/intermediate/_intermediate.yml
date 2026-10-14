@@ -1,0 +1,30 @@
+version: 2
+
+models:
+  - name: int_fx_rates_daily
+    description: |
+      Taux de change quotidiens densifiés — un taux par couple (jour, devise),
+      week-ends et jours fériés compris, par report du dernier cours connu.
+
+      Convention : taux = nombre d'unités de la devise pour 1 EUR.
+      La conversion vers l'euro se fait donc par DIVISION (montant / taux).
+    columns:
+      - name: date_cotation
+        tests: [not_null]
+      - name: devise_cible
+        tests: [not_null]
+      - name: taux
+        description: "Nombre d'unités de la devise pour 1 EUR"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: false
+      - name: is_taux_reporte
+        description: "Vrai si le taux provient d'un report (week-end, férié) et non d'une cotation du jour"
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['date_cotation', 'devise_cible']

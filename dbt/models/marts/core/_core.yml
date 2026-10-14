@@ -6,8 +6,9 @@ models:
   # ============================================
   - name: dim_tenants
     description: "Dimension des banques partenaires B2B2C"
-    access: public
-    group: core
+    config:
+      access: public
+      group: core
     columns:
       - name: tenant_id
         tests: [unique, not_null]
@@ -16,12 +17,14 @@ models:
       - name: contract_tier
         tests:
           - accepted_values:
-              values: ['gold', 'silver', 'bronze']
+              arguments:
+                values: ['gold', 'silver', 'bronze']
 
   - name: dim_comptes
     description: "Dimension comptes — état courant"
-    access: public
-    group: core
+    config:
+      access: public
+      group: core
     columns:
       - name: compte_id
         tests: [unique, not_null]
@@ -29,34 +32,183 @@ models:
         tests:
           - not_null
           - relationships:
-              to: ref('dim_tenants')
-              field: tenant_id
+              arguments:
+                to: ref('dim_tenants')
+                field: tenant_id
       - name: statut
         tests:
           - accepted_values:
-              values: ['actif', 'inactif', 'cloture', 'suspendu']
+              arguments:
+                values: ['actif', 'inactif', 'cloture', 'suspendu']
       - name: kyc_level
         tests:
           - accepted_values:
-              values: ['basic', 'intermediate', 'advanced', 'not_verified']
+              arguments:
+                values: ['basic', 'intermediate', 'advanced', 'not_verified']
 
   - name: dim_comptes_scd2
-    description: "Dimension comptes historisée (SCD Type 2)"
-    access: public
-    group: core
+    description: |
+      Dimension comptes historisée (SCD Type 2) — piste d'audit réglementaire.
+      Grain : une ligne = une version d'un compte, valide sur l'intervalle
+      [date_debut_validite, date_fin_validite[ (borne haute EXCLUE).
+      La version courante porte date_fin_validite = 9999-12-31, jamais NULL.
+    config:
+      access: public
+      group: core
+    columns:
+      - name: compte_version_key
+        description: "Surrogate key de la VERSION (compte_id + date de début)"
+        tests: [unique, not_null]
+      - name: compte_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_comptes')
+                field: compte_id
+      - name: date_debut_validite
+        tests: [not_null]
+      - name: date_fin_validite
+        description: "Borne EXCLUE ; 9999-12-31 pour la version courante"
+        tests: [not_null]
+      - name: is_current
+        tests: [not_null]
+      - name: version_number
+        description: "Rang de la version, 1 = version initiale"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+      - name: statut
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['actif', 'inactif', 'cloture', 'suspendu']
+      - name: kyc_level
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['basic', 'intermediate', 'advanced', 'not_verified']
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['compte_id', 'date_debut_validite']
 
   - name: dim_categories
-    description: "Dimension catégories avec hiérarchie résolue"
-    access: public
-    group: core
+    description: |
+      Dimension catégories avec hiérarchie résolue par CTE récursive.
+      Grain : une ligne par catégorie active. Expose le chemin complet depuis
+      la racine, la profondeur réelle et l'identifiant de l'ancêtre racine.
+    config:
+      access: public
+      group: core
     columns:
       - name: categorie_id
         tests: [unique, not_null]
+      - name: nom_categorie
+        tests: [not_null]
+      - name: chemin_complet
+        description: "Chemin depuis la racine, séparé par ' > '"
+        tests: [not_null]
+      - name: niveau
+        description: "Profondeur réelle calculée par la récursion (1 = racine)"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                max_value: 10
+      - name: id_racine
+        description: "Identifiant de l'ancêtre de plus haut niveau"
+        tests:
+          - not_null
+          # L'ancêtre doit lui-même exister dans la dimension
+          - relationships:
+              arguments:
+                to: ref('dim_categories')
+                field: categorie_id
+      - name: is_orphelin
+        description: >
+          Catégorie active dont le parent déclaré est absent du périmètre actif.
+          Signale une incohérence du référentiel amont, pas une erreur du modèle.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [false]
+                quote: false
+              config:
+                severity: warn
+      - name: is_racine
+        tests: [not_null]
+      - name: ecart_niveau_source
+        description: "Écart entre la profondeur calculée et le niveau déclaré en source"
+        tests:
+          - accepted_values:
+              arguments:
+                values: [false]
+                quote: false
+              config:
+                severity: warn
 
   - name: bridge_comptes_titulaires
-    description: "Bridge table pour les comptes joints (many-to-many)"
-    access: private
-    group: core
+    description: |
+      Bridge many-to-many entre comptes et titulaires (US 2.2).
+      Grain : une ligne = un rattachement (compte, titulaire, période).
+      Porte l'allocation_factor permettant de ventiler les montants d'un compte
+      joint entre ses détenteurs. Toute jointure sur cette table doit être
+      bornée par date_debut / date_fin.
+    config:
+      # `protected` et non `private` : un modèle private n'est référençable que
+      # depuis son propre groupe, ce qui exclut les tests singuliers (qui
+      # n'appartiennent à aucun groupe) et interdirait à tout mart hors du
+      # groupe core de ventiler des montants par titulaire.
+      # `protected` = référençable dans tout le projet, mais pas exposé aux
+      # consommateurs externes — ce qui correspond exactement à l'usage visé
+      # pour une bridge contenant de la PII.
+      access: protected
+      group: core
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['compte_id', 'titulaire_id', 'date_debut']
+    columns:
+      - name: bridge_key
+        tests: [unique, not_null]
+      - name: compte_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_comptes')
+                field: compte_id
+      - name: titulaire_id
+        tests: [not_null]
+      - name: allocation_factor
+        description: "Quote-part du titulaire ; somme = 1 par compte à une date donnée"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+                inclusive: true
+      - name: role_titulaire
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['titulaire_principal', 'co_titulaire']
+      - name: nb_titulaires_compte
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+      - name: date_debut
+        tests: [not_null]
+      - name: is_rattachement_courant
+        tests: [not_null]
 
   # ============================================
   # FAITS
@@ -64,11 +216,16 @@ models:
   - name: fct_transactions
     description: |
       Table de faits principale — 50-100M lignes.
+      Grain : une ligne = une transaction validée ou en_attente, non-reversal.
       Enrichie avec FX à date, catégorisation, compliance.
-    access: public
-    group: core
+
+      Limite connue : le filtre de statut combiné au merge laisse des lignes
+      fantômes lorsqu'une transaction est rejetée après insertion.
+      Voir fct_transactions.sql et docs/DESIGN.md § Limites connues.
     # Contract dbt : les consommateurs externes dépendent de ce schéma
     config:
+      access: public
+      group: core
       contract:
         enforced: false  # Activer une fois la structure stabilisée
     columns:
@@ -80,44 +237,87 @@ models:
         tests:
           - not_null
           - relationships:
-              to: ref('dim_tenants')
-              field: tenant_id
+              arguments:
+                to: ref('dim_tenants')
+                field: tenant_id
         data_type: number
       - name: compte_id
         tests:
           - not_null
           - relationships:
-              to: ref('dim_comptes')
-              field: compte_id
+              arguments:
+                to: ref('dim_comptes')
+                field: compte_id
         data_type: number
       - name: montant_eur
         tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
-              max_value: 100000000
-              severity: warn
+              arguments:
+                min_value: 0
+                max_value: 100000000
+              config:
+                severity: warn
         data_type: number
       - name: statut
+        description: >
+          Statut de la transaction. Le fait ne retient que 'validee' et
+          'en_attente' : une transaction passée à 'rejetee' après insertion
+          conserve son ancien statut (lignes fantômes — limite documentée
+          dans fct_transactions.sql et docs/DESIGN.md).
         tests:
+          - not_null
           - accepted_values:
-              values: ['validee', 'en_attente']
+              arguments:
+                values: ['validee', 'en_attente']
         data_type: varchar
       - name: date_transaction
         tests: [not_null]
         data_type: timestamp_ntz
 
   - name: fct_virements
-    description: "Faits virements — double-écriture sortant/entrant"
-    access: public
-    group: core
+    description: |
+      Faits virements — double-écriture sortant/entrant.
+      Grain : une ligne = une leg. Chaque virement exécuté produit exactement
+      2 lignes, identifiées par la clé composite (virement_id, virement_leg).
+    config:
+      access: public
+      group: core
+    tests:
+      # Une seule ligne par (virement, leg)
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['virement_id', 'virement_leg']
+      # Les deux invariants de la double-écriture — exactement 2 legs par
+      # virement, et somme des montants signés nulle — sont vérifiés par des
+      # tests singuliers (tests/assert_virements_*.sql) : la version installée
+      # de dbt_utils.expression_is_true ne supporte pas group_by_columns.
     columns:
+      - name: virement_leg_key
+        description: "Clé technique de la leg (hash de virement_id + virement_leg)"
+        tests: [unique, not_null]
       - name: virement_id
         tests: [not_null]
       - name: virement_leg
         tests:
+          - not_null
           - accepted_values:
-              values: ['sortant', 'entrant']
+              arguments:
+                values: ['sortant', 'entrant']
+      - name: compte_id
+        description: "Compte porteur de la leg (source si sortant, destinataire si entrant)"
+        tests: [not_null]
+      - name: contrepartie_compte_id
+        description: "Compte de l'autre leg du même virement"
+        tests: [not_null]
+      - name: montant_signe
+        description: "Montant négatif sur la leg sortante, positif sur la leg entrante"
+        tests: [not_null]
+      - name: statut
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['execute']
 
 groups:
   - name: core
