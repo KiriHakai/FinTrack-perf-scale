@@ -1,20 +1,20 @@
 -- ============================================================
--- FCT VIREMENTS — chaque virement génère 2 lignes (sortant + entrant)
+-- FCT VIREMENTS — double-écriture (une leg sortante + une leg entrante)
 -- ============================================================
--- TODO (Sprint 2) : Compléter la double-écriture.
+-- Grain : une ligne = une leg de virement.
+-- Chaque virement exécuté produit donc EXACTEMENT 2 lignes :
+--   - leg 'sortant' : portée par compte_source_id, montant_signe négatif
+--   - leg 'entrant' : portée par compte_dest_id,   montant_signe positif
 --
--- Chaque ligne source doit produire 2 lignes dans le fait :
---   - une "sortant" pour compte_source_id (montant négatif)
---   - une "entrant" pour compte_dest_id (montant positif)
+-- Ce grain permet d'agréger les mouvements par compte sans se soucier du sens
+-- du virement : un simple SUM(montant_signe) par compte donne le flux net.
 --
--- Attendus :
---   - virement_id (partagé entre les 2 lignes)
---   - virement_leg (sortant/entrant)
---   - compte_id (celui de la leg concernée)
---   - contrepartie_compte_id (l'autre)
---   - montant_signe
+-- Clé unique composite : (virement_id, virement_leg). C'est elle qui est
+-- utilisée par la stratégie merge — le virement_id seul ne suffit pas,
+-- puisqu'il est partagé par les deux legs.
 --
--- Indice : UNION ALL entre deux SELECT.
+-- Les frais sont imputés à la leg sortante uniquement : c'est l'émetteur qui
+-- les supporte. Les porter sur les deux legs les compterait deux fois.
 -- ============================================================
 
 {{
@@ -23,27 +23,119 @@
         unique_key=['virement_id', 'virement_leg'],
         incremental_strategy='merge',
         cluster_by=['tenant_id', "date_trunc('month', date_virement)"],
-        tags=['marts', 'core', 'fct', 'incremental', 'todo']
+        on_schema_change='append_new_columns',
+        tags=['marts', 'core', 'fct', 'incremental']
     )
 }}
 
 with virements as (
+
     select * from {{ ref('stg_virements') }}
+    where statut = 'execute'
+
     {% if is_incremental() %}
-        where _loaded_at >= (select dateadd('day', -3, max(_loaded_at)) from {{ this }})
+        -- Fenêtre glissante paramétrable (cf. dbt_project.yml).
+        -- NB : tant que toutes les lignes partagent le même _loaded_at
+        -- (un seul COPY), cette fenêtre sélectionne l'intégralité de la table.
+        -- Voir docs/PERF_LOG.md, constat n°1.
+        and _loaded_at >= (
+            select dateadd('day', -{{ var('incremental_lookback_days') }}, max(_loaded_at))
+            from {{ this }}
+        )
     {% endif %}
-    and statut = 'execute'
+
+),
+
+leg_sortante as (
+
+    select
+        v.virement_id,
+        'sortant'               as virement_leg,
+        v.tenant_id,
+        v.compte_source_id      as compte_id,
+        v.compte_dest_id        as contrepartie_compte_id,
+        v.montant,
+        -v.montant              as montant_signe,
+        v.devise,
+        v.frais,
+        v.date_virement,
+        v.date_execution,
+        v.type_virement,
+        v.motif,
+        v.reference,
+        v.statut,
+        v.created_at,
+        v.updated_at,
+        v._loaded_at
+    from virements v
+
+),
+
+leg_entrante as (
+
+    select
+        v.virement_id,
+        'entrant'               as virement_leg,
+        v.tenant_id,
+        v.compte_dest_id        as compte_id,
+        v.compte_source_id      as contrepartie_compte_id,
+        v.montant,
+        v.montant               as montant_signe,
+        v.devise,
+        -- Les frais sont supportés par l'émetteur : 0 côté bénéficiaire.
+        0                       as frais,
+        v.date_virement,
+        v.date_execution,
+        v.type_virement,
+        v.motif,
+        v.reference,
+        v.statut,
+        v.created_at,
+        v.updated_at,
+        v._loaded_at
+    from virements v
+
+),
+
+double_ecriture as (
+
+    select * from leg_sortante
+    union all
+    select * from leg_entrante
+
 )
 
--- Squelette — À COMPLÉTER avec la double-écriture
 select
+    -- Clé technique de la leg
+    {{ dbt_utils.generate_surrogate_key(['virement_id', 'virement_leg']) }} as virement_leg_key,
+
     virement_id,
+    virement_leg,
     tenant_id,
-    compte_source_id as compte_id,
-    'sortant' as virement_leg,
+    compte_id,
+    contrepartie_compte_id,
+
+    -- Montants
     montant,
+    montant_signe,
     devise,
+    frais,
+    montant_signe - frais as montant_net_signe,
+
+    -- Temporalité
     date_virement,
+    date_execution,
+    date_trunc('day', date_virement)::date as jour_virement,
+
+    -- Attributs
+    type_virement,
+    motif,
+    reference,
     statut,
+
+    -- Métadonnées
+    created_at,
+    updated_at,
     _loaded_at
-from virements
+
+from double_ecriture

@@ -1,0 +1,82 @@
+unit_tests:
+
+  - name: test_double_ecriture_deux_legs
+    description: >
+      Un virement exécuté doit produire exactement 2 lignes : une leg sortante
+      portée par le compte source (montant négatif) et une leg entrante portée
+      par le compte destinataire (montant positif).
+    model: fct_virements
+    overrides:
+      macros:
+        # Les tests unitaires sur un modèle incrémental exigent un override
+        # explicite : on teste ici la logique en mode "full refresh".
+        is_incremental: false
+    given:
+      - input: ref('stg_virements')
+        rows:
+          - {virement_id: 1, tenant_id: 3, compte_source_id: 100,
+             compte_dest_id: 200, montant: 250.00, devise: 'EUR',
+             date_virement: '2024-03-15 10:00:00', date_execution: '2024-03-15 10:05:00',
+             motif: 'test', reference: 'VIR-TEST-1', statut: 'execute',
+             type_virement: 'sepa', frais: 0, created_at: '2024-03-15 10:00:00',
+             updated_at: '2024-03-15 10:00:00', _loaded_at: '2024-03-16 00:00:00'}
+    expect:
+      rows:
+        - {virement_id: 1, virement_leg: 'sortant', compte_id: 100,
+           contrepartie_compte_id: 200, montant_signe: -250.00}
+        - {virement_id: 1, virement_leg: 'entrant', compte_id: 200,
+           contrepartie_compte_id: 100, montant_signe: 250.00}
+
+  - name: test_frais_imputes_a_l_emetteur
+    description: >
+      Les frais sont portés par la seule leg sortante : les imputer aux deux
+      legs les compterait deux fois dans les agrégats de coût.
+    model: fct_virements
+    overrides:
+      macros:
+        # Les tests unitaires sur un modèle incrémental exigent un override
+        # explicite : on teste ici la logique en mode "full refresh".
+        is_incremental: false
+    given:
+      - input: ref('stg_virements')
+        rows:
+          - {virement_id: 2, tenant_id: 1, compte_source_id: 10,
+             compte_dest_id: 20, montant: 100.00, devise: 'EUR',
+             date_virement: '2024-04-01 09:00:00', date_execution: '2024-04-01 09:00:00',
+             motif: 'test frais', reference: 'VIR-TEST-2', statut: 'execute',
+             type_virement: 'swift', frais: 5.00, created_at: '2024-04-01 09:00:00',
+             updated_at: '2024-04-01 09:00:00', _loaded_at: '2024-04-02 00:00:00'}
+    expect:
+      rows:
+        - {virement_id: 2, virement_leg: 'sortant', frais: 5.00, montant_net_signe: -105.00}
+        - {virement_id: 2, virement_leg: 'entrant', frais: 0, montant_net_signe: 100.00}
+
+  - name: test_virements_non_executes_exclus
+    description: >
+      Seuls les virements au statut 'execute' entrent dans le fait : un virement
+      en attente, annulé ou rejeté ne génère aucune écriture comptable.
+    model: fct_virements
+    overrides:
+      macros:
+        # Les tests unitaires sur un modèle incrémental exigent un override
+        # explicite : on teste ici la logique en mode "full refresh".
+        is_incremental: false
+    given:
+      - input: ref('stg_virements')
+        rows:
+          - {virement_id: 3, tenant_id: 1, compte_source_id: 10,
+             compte_dest_id: 20, montant: 100.00, devise: 'EUR',
+             date_virement: '2024-04-01 09:00:00', date_execution: '2024-04-01 09:00:00',
+             motif: 'en attente', reference: 'VIR-TEST-3', statut: 'en_attente',
+             type_virement: 'sepa', frais: 0, created_at: '2024-04-01 09:00:00',
+             updated_at: '2024-04-01 09:00:00', _loaded_at: '2024-04-02 00:00:00'}
+          - {virement_id: 4, tenant_id: 1, compte_source_id: 30,
+             compte_dest_id: 40, montant: 75.00, devise: 'EUR',
+             date_virement: '2024-04-01 11:00:00', date_execution: '2024-04-01 11:00:00',
+             motif: 'execute', reference: 'VIR-TEST-4', statut: 'execute',
+             type_virement: 'sepa', frais: 0, created_at: '2024-04-01 11:00:00',
+             updated_at: '2024-04-01 11:00:00', _loaded_at: '2024-04-02 00:00:00'}
+    expect:
+      rows:
+        - {virement_id: 4, virement_leg: 'sortant', compte_id: 30}
+        - {virement_id: 4, virement_leg: 'entrant', compte_id: 40}

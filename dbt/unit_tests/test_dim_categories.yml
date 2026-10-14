@@ -1,0 +1,66 @@
+unit_tests:
+
+  - name: test_hierarchie_trois_niveaux
+    description: >
+      La CTE récursive doit reconstruire le chemin complet sur plusieurs niveaux
+      et propager l'identifiant de la racine jusqu'aux feuilles.
+      Ce test est le seul moyen de valider la récursion : le jeu de données
+      synthétique ne contient que des catégories de niveau 1 (voir DESIGN.md).
+    model: dim_categories
+    given:
+      - input: ref('stg_categories')
+        rows:
+          - {categorie_id: 1, nom_categorie: 'Loisirs', type_categorie: 'depense',
+             groupe: 'Loisirs', categorie_parent_id: null, niveau_hierarchique: 1,
+             is_active: true, date_creation: '2023-01-01'}
+          - {categorie_id: 2, nom_categorie: 'Restaurant', type_categorie: 'depense',
+             groupe: 'Loisirs', categorie_parent_id: 1, niveau_hierarchique: 2,
+             is_active: true, date_creation: '2023-01-01'}
+          - {categorie_id: 3, nom_categorie: 'Fast-food', type_categorie: 'depense',
+             groupe: 'Loisirs', categorie_parent_id: 2, niveau_hierarchique: 3,
+             is_active: true, date_creation: '2023-01-01'}
+    expect:
+      rows:
+        - {categorie_id: 1, niveau: 1, chemin_complet: 'Loisirs',
+           id_racine: 1, is_racine: true, is_orphelin: false}
+        - {categorie_id: 2, niveau: 2, chemin_complet: 'Loisirs > Restaurant',
+           id_racine: 1, is_racine: false, is_orphelin: false}
+        - {categorie_id: 3, niveau: 3, chemin_complet: 'Loisirs > Restaurant > Fast-food',
+           id_racine: 1, is_racine: false, is_orphelin: false}
+
+  - name: test_orphelin_traite_comme_racine
+    description: >
+      Une catégorie dont le parent est absent du périmètre actif ne doit pas
+      disparaître : elle est rattachée à l'ancre comme racine et marquée
+      is_orphelin, afin d'être détectable par la gouvernance du référentiel.
+    model: dim_categories
+    given:
+      - input: ref('stg_categories')
+        rows:
+          - {categorie_id: 10, nom_categorie: 'Abonnements', type_categorie: 'depense',
+             groupe: 'Loisirs', categorie_parent_id: 999, niveau_hierarchique: 2,
+             is_active: true, date_creation: '2023-01-01'}
+    expect:
+      rows:
+        - {categorie_id: 10, niveau: 1, chemin_complet: 'Abonnements',
+           id_racine: 10, is_racine: false, is_orphelin: true}
+
+  - name: test_ecart_niveau_source_detecte
+    description: >
+      Le niveau déclaré en source est confronté au niveau réellement calculé.
+      Un référentiel amont incohérent doit être signalé, pas corrigé en silence.
+    model: dim_categories
+    given:
+      - input: ref('stg_categories')
+        rows:
+          - {categorie_id: 1, nom_categorie: 'Logement', type_categorie: 'depense',
+             groupe: 'Logement', categorie_parent_id: null, niveau_hierarchique: 1,
+             is_active: true, date_creation: '2023-01-01'}
+          # Enfant direct d'une racine : niveau réel = 2, mais la source dit 5
+          - {categorie_id: 2, nom_categorie: 'Électricité', type_categorie: 'depense',
+             groupe: 'Logement', categorie_parent_id: 1, niveau_hierarchique: 5,
+             is_active: true, date_creation: '2023-01-01'}
+    expect:
+      rows:
+        - {categorie_id: 1, niveau: 1, niveau_declare_source: 1, ecart_niveau_source: false}
+        - {categorie_id: 2, niveau: 2, niveau_declare_source: 5, ecart_niveau_source: true}
