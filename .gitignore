@@ -40,3 +40,5 @@ manifest.json.bak
 
 # Others
 # MISSION.md : exclusion retiree, le briefing fait partie du depot
+# Fichiers verrous Office (~$xxx.pptx) crees quand un livrable est ouvert
+~$*
