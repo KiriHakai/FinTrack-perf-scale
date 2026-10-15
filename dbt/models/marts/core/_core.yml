@@ -216,40 +216,67 @@ models:
   - name: fct_transactions
     description: |
       Table de faits principale — 50-100M lignes.
-      Grain : une ligne = une transaction validée ou en_attente, non-reversal.
-      Enrichie avec FX à date, catégorisation, compliance.
+      Grain : une ligne = une transaction validee ou en_attente, non-reversal.
+      Enrichie avec FX a date, categorisation, compliance.
 
-      Limite connue : le filtre de statut combiné au merge laisse des lignes
-      fantômes lorsqu'une transaction est rejetée après insertion.
+      MODELE PUBLIC SOUS CONTRAT. Toute modification de structure (suppression
+      ou renommage de colonne, changement de type) fait echouer le build.
+      Procedure de migration : voir docs/CONTRACTS.md.
+
+      Limite connue : le filtre de statut combine au merge laisse des lignes
+      fantomes lorsqu'une transaction est rejetee apres insertion.
       Voir fct_transactions.sql et docs/DESIGN.md § Limites connues.
-    # Contract dbt : les consommateurs externes dépendent de ce schéma
+    latest_version: 1
     config:
       access: public
       group: core
       contract:
-        enforced: false  # Activer une fois la structure stabilisée
+        enforced: true
     columns:
       - name: transaction_id
+        data_type: number(18,0)
         description: "Identifiant unique de la transaction"
         tests: [unique, not_null]
-        data_type: number
+      - name: external_transaction_id
+        data_type: varchar(50)
       - name: tenant_id
+        data_type: number(38,0)
         tests:
           - not_null
           - relationships:
               arguments:
                 to: ref('dim_tenants')
                 field: tenant_id
-        data_type: number
       - name: compte_id
+        data_type: number(38,0)
         tests:
           - not_null
           - relationships:
               arguments:
                 to: ref('dim_comptes')
                 field: compte_id
-        data_type: number
+      - name: categorie_id
+        data_type: number(38,0)
+      - name: date_transaction
+        data_type: timestamp_ntz
+        tests: [not_null]
+      - name: jour_transaction
+        data_type: date
+      - name: semaine_transaction
+        data_type: date
+      - name: mois_transaction
+        data_type: date
+      - name: date_valeur
+        data_type: timestamp_ntz
+      - name: date_settlement
+        data_type: timestamp_ntz
+      - name: montant
+        data_type: number(15,2)
+      - name: devise
+        data_type: varchar(9)
       - name: montant_eur
+        data_type: number(30,2)
+        description: "Montant converti au taux du jour — division, voir US 4.2"
         tests:
           - not_null
           - dbt_utils.accepted_range:
@@ -258,22 +285,146 @@ models:
                 max_value: 100000000
               config:
                 severity: warn
-        data_type: number
+      - name: taux_change_retenu
+        data_type: number(18,8)
+        description: "Taux effectivement applique — permet de rejouer le calcul"
+      - name: is_taux_referentiel
+        data_type: boolean
+      - name: montant_signe
+        data_type: number(15,2)
+      - name: montant_signe_eur
+        data_type: number(30,2)
+      - name: frais
+        data_type: number(10,2)
+      - name: montant_net
+        data_type: number(15,2)
+      - name: type_operation
+        data_type: varchar(10)
+      - name: sens
+        data_type: varchar(10)
       - name: statut
+        data_type: varchar(30)
         description: >
           Statut de la transaction. Le fait ne retient que 'validee' et
-          'en_attente' : une transaction passée à 'rejetee' après insertion
-          conserve son ancien statut (lignes fantômes — limite documentée
+          'en_attente' : une transaction passee a 'rejetee' apres insertion
+          conserve son ancien statut (lignes fantomes — limite documentee
           dans fct_transactions.sql et docs/DESIGN.md).
         tests:
           - not_null
           - accepted_values:
               arguments:
                 values: ['validee', 'en_attente']
-        data_type: varchar
-      - name: date_transaction
-        tests: [not_null]
+      - name: moyen_paiement
+        data_type: varchar(20)
+      - name: canal
+        data_type: varchar(30)
+      - name: type_compte
+        data_type: varchar(20)
+      - name: customer_segment
+        data_type: varchar(20)
+      - name: pays_compte
+        data_type: varchar(6)
+      - name: nom_categorie
+        data_type: varchar(100)
+      - name: type_categorie
+        data_type: varchar(20)
+      - name: groupe
+        data_type: varchar(50)
+      - name: marchand_nom
+        data_type: varchar(200)
+      - name: marchand_categorie
+        data_type: varchar(50)
+      - name: marchand_pays
+        data_type: varchar(6)
+      - name: marchand_mcc
+        data_type: number(38,0)
+      - name: aml_score
+        data_type: number(6,2)
+      - name: aml_flag
+        data_type: varchar(30)
+      - name: fraud_score
+        data_type: number(6,2)
+      - name: is_flagged_for_review
+        data_type: boolean
+      - name: is_reconciled
+        data_type: boolean
+      - name: reconciliation_batch_id
+        data_type: varchar(50)
+      - name: source_system
+        data_type: varchar(50)
+      - name: created_at
         data_type: timestamp_ntz
+      - name: updated_at
+        data_type: timestamp_ntz
+      - name: _loaded_at
+        data_type: timestamp_ntz
+
+    versions:
+      # v1 — version de reference. L'alias conserve l'emplacement physique
+      # historique : sans lui, dbt materialiserait la table en
+      # FCT_TRANSACTIONS_V1 et tous les outils pointant sur
+      # MARTS_CORE.FCT_TRANSACTIONS cesseraient de la trouver.
+      - v: 1
+        config:
+          alias: fct_transactions
+        tests:
+          # Detection d'anomalies de volumetrie (US 6.3).
+          #
+          # DEUX PIEGES, DECOUVERTS A L'EXECUTION.
+          #
+          # 1. Elementary calcule ses fenetres par rapport a la DATE DU JOUR.
+          #    Nos donnees s'arretent au 31/12/2024, soit plus de 20 mois dans
+          #    le passe : avec les valeurs par defaut (detection 2 jours,
+          #    entrainement 14), le test ne verrait aucune ligne et passerait
+          #    au vert sans rien analyser — un faux vert.
+          #
+          # 2. Avec `seasonality: day_of_week`, le compteur de la fenetre
+          #    d'entrainement s'exprime en BUCKETS DU MEME JOUR DE SEMAINE, pas
+          #    en jours. Un training_period de 1095 a donc produit 1095 mardis,
+          #    soit 21 ans d'historique remontant a 2005. Les ~900 buckets
+          #    anterieurs a nos donnees ont ete comptes a ZERO, ramenant la
+          #    moyenne d'entrainement a 105 lignes/jour contre ~1300 reelles.
+          #    Resultat : 79 journees parfaitement normales signalees a plus de
+          #    5 ecarts-types. Le test mesurait l'absence d'historique, pas une
+          #    anomalie de volume.
+          #
+          # D'ou 26 buckets d'entrainement (26 semaines, soit ~6 mois) et une
+          # detection bornee a 100 jours, qui reste dans la plage des donnees.
+          - elementary.volume_anomalies:
+              arguments:
+                timestamp_column: date_transaction
+                time_bucket:
+                  period: day
+                  count: 1
+                # 730 jours : il faut remonter jusqu'aux donnees. Avec 100
+                # jours, la fenetre couvrait juillet-octobre 2026 — ou il n'y a
+                # rien — et le test passait au vert sans analyser une seule
+                # ligne. Les deux fenetres se reglent ENSEMBLE : la detection
+                # doit atteindre les donnees, l'entrainement doit rester dedans.
+                detection_period:
+                  period: day
+                  count: 730
+                training_period:
+                  period: day
+                  count: 26
+                anomaly_direction: both
+                # Les volumes bancaires suivent un rythme hebdomadaire marque
+                # (creux du week-end) : sans cette correction, chaque samedi
+                # ressortirait comme une anomalie.
+                seasonality: day_of_week
+              config:
+                severity: warn
+
+      - v: 2
+        config:
+          materialized: view
+        columns:
+          - include: all
+          - name: montant_hors_taxes
+            data_type: number(30,2)
+            description: >
+              Montant hors taxes des achats marchands (TVA 20 % par convention).
+              Null hors achat marchand : un virement ou un salaire n'ont pas de TVA.
 
   - name: fct_virements
     description: |
