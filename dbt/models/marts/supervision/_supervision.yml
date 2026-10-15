@@ -1,0 +1,49 @@
+version: 2
+
+models:
+  - name: mart_supervision_volumetrie
+    description: |
+      Volumétrie quotidienne par tenant, avec détection d'écarts par rapport à
+      une référence glissante de 28 jours.
+      Grain : une ligne = (jour, tenant).
+
+      Interface de supervision destinée à Power BI. Elle isole le rapport des
+      structures internes d'Elementary, dont le schéma change entre versions.
+    config:
+      access: public
+      group: core
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['jour', 'tenant_id']
+    columns:
+      - name: jour
+        tests: [not_null]
+      - name: tenant_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_tenants')
+                field: tenant_id
+      - name: nb_transactions
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: taux_validation_pct
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+      - name: statut_volumetrie
+        description: "pic, creux, normal, ou reference_insuffisante quand l'historique est trop court"
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['pic', 'creux', 'normal', 'reference_insuffisante']
+      - name: is_anomalie_volume
+        tests: [not_null]

@@ -34,6 +34,11 @@ on-run-end:
 # Modèles
 # ============================================
 models:
+  # Elementary materialise ses tables de monitoring dans un schema dedie
+  # (<schema>_elementary) : elles ne doivent pas se melanger aux marts metier.
+  elementary:
+    +schema: elementary
+
   fintrack_perf_scale:
     +persist_docs:
       relation: true
@@ -58,6 +63,8 @@ models:
         +schema: marts_finance
       analytics:
         +schema: marts_analytics
+      supervision:
+        +schema: marts_supervision
 
 # ============================================
 # Snapshots

@@ -15,6 +15,9 @@ packages:
   - package: dbt-labs/codegen
     version: [">=0.12.0", "<1.0.0"]
 
-  # Observabilité — à activer une fois le projet stable
-  # - package: elementary-data/elementary
-  #   version: [">=0.15.0", "<1.0.0"]
+  # Observabilité des donnees (US 6.3).
+  # Version epinglee et non en plage : Elementary cree ses propres tables et
+  # ses modeles evoluent entre versions mineures — une montee automatique
+  # pourrait casser le schema de monitoring sans prevenir.
+  - package: elementary-data/elementary
+    version: 0.26.1

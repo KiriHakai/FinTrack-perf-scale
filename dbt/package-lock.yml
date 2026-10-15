@@ -8,7 +8,10 @@ packages:
   - name: codegen
     package: dbt-labs/codegen
     version: 0.14.1
+  - name: elementary
+    package: elementary-data/elementary
+    version: 0.26.1
   - name: dbt_date
     package: godatadriven/dbt_date
     version: 0.21.0
-sha1_hash: 975764ed4324c9c11ef556a316a666bc5ad6ba48
+sha1_hash: 5735b8867d6ce6430c01e8c0ad6a067b6faffd1d
