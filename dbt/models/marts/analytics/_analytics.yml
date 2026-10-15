@@ -1,0 +1,90 @@
+version: 2
+
+models:
+  - name: mart_tenant_kpis_daily
+    description: "KPIs quotidiens par tenant — consommé par le dashboard exécutif"
+    config:
+      access: public
+      group: core
+    columns:
+      - name: jour
+        tests: [not_null]
+      - name: tenant_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_tenants')
+                field: tenant_id
+
+  - name: mart_cohortes_retention
+    description: |
+      Rétention par cohorte d'ouverture de compte.
+      Grain : une ligne = (cohorte, mois_offset), de M+0 à M+12.
+      Le dénominateur est l'effectif INITIAL de la cohorte, jamais les actifs
+      du mois précédent. Chaque cohorte est bornée à sa profondeur réellement
+      observable (nb_mois_observables) : les mois non observés sont absents,
+      ils ne valent pas 0 %.
+    config:
+      access: public
+      group: core
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['cohort_mois', 'mois_offset']
+    columns:
+      - name: cohort_mois
+        tests: [not_null]
+      - name: mois_offset
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 12
+      - name: nb_utilisateurs_cohorte
+        description: "Effectif initial — dénominateur fixe de la cohorte"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+      - name: nb_utilisateurs_actifs
+        tests: [not_null]
+      - name: taux_retention_pct
+        description: "Part de la cohorte initiale active ce mois-là"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+
+  - name: mart_transactions_anomalies
+    description: |
+      Détection d'anomalies de montant par Z-score sur les 90 transactions
+      précédentes du compte (fenêtre excluant la transaction courante).
+      Les transactions disposant de moins de 30 observations historiques sont
+      classées 'historique_insuffisant' plutôt que faussement normales.
+    config:
+      access: public
+      group: core
+    columns:
+      - name: transaction_id
+        tests: [unique, not_null]
+      - name: compte_id
+        tests: [not_null]
+      - name: z_score
+        description: "Null si l'historique est insuffisant ou l'écart-type nul"
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: is_anomalie
+        tests: [not_null]
+      - name: severite
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['historique_insuffisant', 'normal', 'low', 'medium', 'high']
